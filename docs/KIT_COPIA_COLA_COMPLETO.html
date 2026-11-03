@@ -1,0 +1,553 @@
+<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Kit copia e cola — NP2 Calculadora NAF</title><style>
+:root{color-scheme:light}*{box-sizing:border-box}body{margin:0;background:#eef1f5;color:#17212b;font:16px/1.55 Arial,sans-serif}.toolbar{position:sticky;top:0;background:#172b3d;color:white;padding:12px 18px;display:flex;gap:14px;align-items:center;z-index:2;box-shadow:0 2px 8px #0002}.toolbar button{background:#fff;color:#172b3d;border:0;border-radius:6px;padding:10px 16px;font-weight:bold;cursor:pointer}.toolbar span{font-size:14px}.doc{max-width:950px;margin:28px auto;background:#fff;padding:48px 58px;box-shadow:0 4px 22px #0001}h1,h2,h3{font-weight:700;line-height:1.25;color:#142a3d;break-after:avoid}h1{font-size:30px;border-bottom:2px solid #2d6083;padding-bottom:12px}h2{font-size:23px;margin-top:34px;border-bottom:1px solid #d7e0e8;padding-bottom:7px}h3{font-size:18px;margin-top:25px}p,li{margin:8px 0}ul,ol{padding-left:26px}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f3f5f7;border:1px solid #dbe1e7;border-radius:5px;padding:14px;margin:12px 0;font:12px/1.45 Consolas,'Courier New',monospace;break-inside:auto}pre code{white-space:pre-wrap}code{font:0.92em Consolas,'Courier New',monospace;background:#f0f2f4;padding:1px 3px;border-radius:3px}pre code{background:transparent;padding:0}table{border-collapse:collapse;width:100%;margin:14px 0}th,td{border:1px solid #cdd6df;padding:7px;text-align:left}th{background:#eef3f7}blockquote{border-left:4px solid #3b739a;margin:12px 0;padding:8px 16px;background:#f5f8fa}.note{color:#b8d2e4}@media(max-width:700px){.doc{margin:0;padding:24px 18px}.toolbar{position:sticky;flex-wrap:wrap}pre{font-size:11px}}@media print{body{background:white}.toolbar{display:none}.doc{box-shadow:none;margin:0;padding:0;max-width:none}h1,h2,h3{break-after:avoid}pre{font-size:8pt}}
+</style></head><body><div class="toolbar"><button id="copy">Copiar conteúdo formatado</button><span id="status" class="note">Abra no navegador e use o botão; depois cole no Google Docs ou Word.</span></div><main class="doc" id="content"><h1>Kit copia e cola — NP2 Calculadora NAF</h1>
+<p>Este kit é para aplicar manualmente no fork. Não altera seu GitHub. Crie uma branch por bloco e cole o conteúdo nos caminhos indicados.</p>
+<h2>Premissas importantes</h2>
+<ul>
+<li>O Fator R usa a folha/pró-labore de 12 meses dividida pela receita dos mesmos 12 meses. O formulário recebe valores mensais e anualiza por 12; é uma estimativa que pressupõe valores estáveis.</li>
+<li>O IRPF progressivo abaixo usa os limites mensais oficiais de 2026, incluindo a redução do imposto até R$ 7.350.</li>
+<li>O cálculo do INSS mantém a premissa simplificada já usada no projeto (11% sobre o maior entre 28% da renda e salário mínimo R$ 1.621). Confirme essa premissa com o professor. Não use o resultado como apuração real.</li>
+<li>Em Sobre, substitua <code>EMAIL_NAF_CONFIRMADO</code> por contato confirmado pelo NAF. O <code>mailto:</code> abre o app de e-mail do usuário; envio automático exige serviço e credenciais no backend.</li>
+</ul>
+<h2>1. Backend: motor de cálculo</h2>
+<p>Crie <code>backend/src/services/calculoTributario.js</code>:</p>
+<pre><code class="language-js">const sujeitasFatorR = new Set([&#x27;psicologo&#x27;,&#x27;arquiteto&#x27;,&#x27;medico&#x27;,&#x27;dentista&#x27;]);
+const tabelas = {
+ III: [[180000,.06,0],[360000,.112,9360],[720000,.135,17640],[1800000,.16,35640],[3600000,.21,125640],[4800000,.33,648000]],
+ IV: [[180000,.045,0],[360000,.09,8100],[720000,.102,12420],[1800000,.14,39780],[3600000,.22,183780],[4800000,.33,828000]],
+ V: [[180000,.155,0],[360000,.18,4500],[720000,.195,9900],[1800000,.205,17100],[3600000,.23,62100],[4800000,.305,540000]],
+};
+function calcularPF(renda,custos) {
+ const base=Math.max(0,renda-custos);
+ const faixas=[[2428.80,0,0,&#x27;Isento&#x27;],[2826.65,.075,182.16,&#x27;7,5%&#x27;],[3751.05,.15,394.16,&#x27;15%&#x27;],[4664.68,.225,675.49,&#x27;22,5%&#x27;],[Infinity,.275,908.73,&#x27;27,5%&#x27;]];
+ const [_,aliquota,deducao,nome]=faixas.find(f=&gt;base&lt;=f[0]);
+ const antes=Math.max(0,base*aliquota-deducao);
+ let reducao=base&lt;=5000?antes:base&lt;=7350?Math.max(0,978.62-.133145*base):0;
+ return {base,aliquota,deducao,faixa:nome,antes,reducao2026:reducao,imposto:Math.max(0,antes-reducao)};
+}
+function faixaAnexo(anexo,receita12) {
+ const tabela=tabelas[anexo], faixa=tabela.find(f=&gt;receita12&lt;=f[0])||tabela.at(-1);
+ const efetiva=(receita12*faixa[1]-faixa[2])/receita12;
+ return {nominal:faixa[1],deducao:faixa[2],efetiva};
+}
+function calcularComparativo({tipoProfissao,faturamento,custos=0,folhaMensal=0}) {
+ const profissao=String(tipoProfissao||&#x27;&#x27;).toLowerCase();
+ const renda=Number(faturamento), despesas=Number(custos||0), folha=Number(folhaMensal||0);
+ if(![&#x27;psicologo&#x27;,&#x27;arquiteto&#x27;,&#x27;advogado&#x27;,&#x27;medico&#x27;,&#x27;dentista&#x27;].includes(profissao)) throw Error(&#x27;Selecione uma profissão válida.&#x27;);
+ if(![renda,despesas,folha].every(Number.isFinite)||renda&lt;=0||renda&gt;15000||despesas&lt;0||despesas&gt;renda||folha&lt;0) throw Error(&#x27;Renda deve ser até R$ 15.000; custos e folha não podem ser negativos.&#x27;);
+ if(sujeitasFatorR.has(profissao)&amp;&amp;folha&lt;=0) throw Error(&#x27;Informe a folha/pró-labore para calcular o Fator R.&#x27;);
+ const pf=calcularPF(renda,despesas), receita12=renda*12, folha12=folha*12;
+ const fatorR=sujeitasFatorR.has(profissao)?folha12/receita12:null;
+ const anexo=profissao===&#x27;advogado&#x27;?&#x27;IV&#x27;:fatorR===null||fatorR&gt;=.28?&#x27;III&#x27;:&#x27;V&#x27;;
+ const faixa=faixaAnexo(anexo,receita12), simples=renda*faixa.efetiva;
+ const salarioBase=Math.max(renda*.28,1621), inss=salarioBase*.11, totalPJ=simples+inss;
+ return {profissao,faturamento:renda,custos:despesas,folhaMensal:folha,receita12,folha12,fatorR,anexo,
+   pf,pj:{baseSimples:renda,aliquotaEfetiva:faixa.efetiva,aliquotaNominal:faixa.nominal,deducaoAnexo:faixa.deducao,simples,salarioBase,inss,total:totalPJ},
+   impostoPF:pf.imposto,impostoPJ:totalPJ,melhorOpcao:totalPJ&lt;pf.imposto?&#x27;Pessoa Jurídica (PJ)&#x27;:&#x27;Pessoa Física (PF)&#x27;,economiaMensal:Math.abs(totalPJ-pf.imposto)};
+}
+module.exports={calcularComparativo};</code></pre>
+<h2>2. Controller e rotas</h2>
+<p>Substitua <code>backend/src/controllers/calculoController.js</code>:</p>
+<pre><code class="language-js">const prisma=require(&#x27;../config/prisma&#x27;);
+const {calcularComparativo}=require(&#x27;../services/calculoTributario&#x27;);
+const controller={
+ simulate:(req,res)=&gt;{try{return res.json({resultado:calcularComparativo(req.body)});}catch(e){return res.status(400).json({error:e.message});}},
+ create:async(req,res)=&gt;{try{
+  const r=calcularComparativo(req.body);
+  const calculo=await prisma.calculo.create({data:{userId:req.userId,tipoProfissao:r.profissao,faturamento:r.faturamento,custos:r.custos,folhaMensal:r.folhaMensal,fatorR:r.fatorR,anexoPJ:r.anexo,impostoPF:r.impostoPF,impostoPJ:r.impostoPJ,melhorOpcao:r.melhorOpcao,economiaMensal:r.economiaMensal}});
+  return res.status(201).json({calculo,resultado:r});
+ }catch(e){return res.status(400).json({error:e.message});}},
+ history:async(req,res)=&gt;{try{return res.json(await prisma.calculo.findMany({where:{userId:req.userId},orderBy:{createdAt:&#x27;desc&#x27;}}));}catch{return res.status(500).json({error:&#x27;Erro ao buscar histórico.&#x27;});}}
+};
+module.exports=controller;</code></pre>
+<p>Substitua <code>backend/src/routes/calculoRoutes.js</code> (simular fica antes da autenticação):</p>
+<pre><code class="language-js">const express=require(&#x27;express&#x27;), router=express.Router();
+const c=require(&#x27;../controllers/calculoController&#x27;), auth=require(&#x27;../middlewares/authMiddleware&#x27;);
+router.post(&#x27;/simular&#x27;,c.simulate); // calculadora pública
+router.use(auth);
+router.post(&#x27;/&#x27;,c.create);
+router.get(&#x27;/historico&#x27;,c.history);
+module.exports=router;</code></pre>
+<p>No modelo <code>Calculo</code> em <code>backend/prisma/schema.prisma</code>, acrescente:</p>
+<pre><code class="language-prisma">  folhaMensal Float?
+  fatorR      Float?
+  anexoPJ     String?</code></pre>
+<p>Rode na pasta backend: <code>npx prisma migrate dev --name np2_fator_r</code> e <code>npx prisma generate</code>. Campos opcionais preservam linhas antigas.</p>
+<h2>Formulário frontend ligado ao backend</h2>
+<p>Crie frontend/src/Pages/Simulador.jsx. A página envia os dados para a rota pública de simulação e abre o comparativo.</p>
+<pre><code class="language-jsx">import { useState } from &#x27;react&#x27;;
+import { useNavigate } from &#x27;react-router-dom&#x27;;
+import api from &#x27;../services/api&#x27;;
+import Navbar from &#x27;../components/Navbar&#x27;;
+import Footer from &#x27;../components/Footer&#x27;;
+
+const usaFatorR = new Set([&#x27;psicologo&#x27;,&#x27;arquiteto&#x27;,&#x27;medico&#x27;,&#x27;dentista&#x27;]);
+export default function Simulador() {
+ const navigate=useNavigate();
+ const [form,setForm]=useState({tipoProfissao:&#x27;psicologo&#x27;,faturamento:&#x27;&#x27;,custos:&#x27;0&#x27;,folhaMensal:&#x27;&#x27;});
+ const [erro,setErro]=useState(&#x27;&#x27;),[busy,setBusy]=useState(false);
+ const precisaFolha=usaFatorR.has(form.tipoProfissao);
+ function change(e){setForm({...form,[e.target.name]:e.target.value});}
+ async function submit(e){
+  e.preventDefault();setErro(&#x27;&#x27;);setBusy(true);
+  try{
+   const {data}=await api.post(&#x27;/calculos/simular&#x27;,{...form,faturamento:Number(form.faturamento),custos:Number(form.custos||0),folhaMensal:precisaFolha?Number(form.folhaMensal):0});
+   sessionStorage.setItem(&#x27;naf-resultado&#x27;,JSON.stringify(data.resultado));
+   navigate(&#x27;/comparativo&#x27;,{state:{resultado:data.resultado}});
+  }catch(err){setErro(err.response?.data?.error||&#x27;Não foi possível calcular.&#x27;);}
+  finally{setBusy(false);}
+ }
+ const cls=&#x27;w-full rounded-lg border border-slate-400 p-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-800&#x27;;
+ return &lt;div className=&quot;min-h-screen flex flex-col bg-naf-light&quot;&gt;&lt;Navbar/&gt;&lt;main id=&quot;conteudo&quot; className=&quot;mx-auto w-full max-w-3xl flex-1 px-4 py-8&quot;&gt;
+  &lt;h1 className=&quot;text-3xl font-bold text-naf-blue&quot;&gt;Calculadora tributária PF × PJ&lt;/h1&gt;
+  &lt;p className=&quot;my-3&quot;&gt;Informe sua renda mensal, custos dedutíveis e, para profissões sujeitas, a folha/pró-labore.&lt;/p&gt;
+  &lt;form onSubmit={submit} className=&quot;space-y-5 rounded-2xl bg-white p-5 shadow sm:p-8&quot;&gt;
+   &lt;div&gt;&lt;label htmlFor=&quot;tipoProfissao&quot; className=&quot;mb-1 block font-semibold&quot;&gt;Profissão&lt;/label&gt;&lt;select className={cls} id=&quot;tipoProfissao&quot; name=&quot;tipoProfissao&quot; value={form.tipoProfissao} onChange={change}&gt;&lt;option value=&quot;psicologo&quot;&gt;Psicólogo(a)&lt;/option&gt;&lt;option value=&quot;arquiteto&quot;&gt;Arquiteto(a)&lt;/option&gt;&lt;option value=&quot;advogado&quot;&gt;Advogado(a)&lt;/option&gt;&lt;option value=&quot;medico&quot;&gt;Médico(a)&lt;/option&gt;&lt;option value=&quot;dentista&quot;&gt;Dentista&lt;/option&gt;&lt;/select&gt;&lt;/div&gt;
+   &lt;div&gt;&lt;label htmlFor=&quot;faturamento&quot; className=&quot;mb-1 block font-semibold&quot;&gt;Renda mensal (R$)&lt;/label&gt;&lt;input className={cls} id=&quot;faturamento&quot; name=&quot;faturamento&quot; type=&quot;number&quot; min=&quot;0.01&quot; max=&quot;15000&quot; step=&quot;0.01&quot; required value={form.faturamento} onChange={change}/&gt;&lt;/div&gt;
+   &lt;div&gt;&lt;label htmlFor=&quot;custos&quot; className=&quot;mb-1 block font-semibold&quot;&gt;Custos dedutíveis / Livro Caixa (R$)&lt;/label&gt;&lt;input className={cls} id=&quot;custos&quot; name=&quot;custos&quot; type=&quot;number&quot; min=&quot;0&quot; step=&quot;0.01&quot; required value={form.custos} onChange={change}/&gt;&lt;/div&gt;
+   {precisaFolha&amp;&amp;&lt;div&gt;&lt;label htmlFor=&quot;folhaMensal&quot; className=&quot;mb-1 block font-semibold&quot;&gt;Folha/pró-labore mensal (R$)&lt;/label&gt;&lt;input className={cls} id=&quot;folhaMensal&quot; name=&quot;folhaMensal&quot; type=&quot;number&quot; min=&quot;0.01&quot; step=&quot;0.01&quot; required value={form.folhaMensal} onChange={change}/&gt;&lt;p className=&quot;mt-1 text-sm&quot;&gt;A simulação anualiza folha e receita por 12 meses.&lt;/p&gt;&lt;/div&gt;}
+   {erro&amp;&amp;&lt;p role=&quot;alert&quot; aria-live=&quot;assertive&quot; className=&quot;rounded bg-red-50 p-3 font-semibold text-red-900&quot;&gt;{erro}&lt;/p&gt;}
+   &lt;button disabled={busy} className=&quot;w-full rounded-lg bg-naf-blue p-3 font-bold text-white focus-visible:outline focus-visible:outline-2&quot;&gt;{busy?&#x27;Calculando…&#x27;:&#x27;Comparar PF e PJ&#x27;}&lt;/button&gt;
+  &lt;/form&gt;&lt;p className=&quot;mt-4 text-sm&quot;&gt;Estimativa acadêmica; não substitui orientação contábil.&lt;/p&gt;&lt;/main&gt;&lt;Footer/&gt;&lt;/div&gt;;
+}</code></pre>
+<p>Para o PDF, substitua a página Comparativo por um componente que leia o resultado da navegação ou do sessionStorage; se não houver resultado, redirecione para /. Exporte o conteúdo do relatório usando html2pdf.js. O relatório deve conter: NAF/Universidade Christus name, current date and time, estimate warning, PF vs PJ bar chart, PF base/rate/deduction/tax, PJ base/effective rate/annex/tax, and (when applicable) monthly payroll, Factor R percentage, and applied annex. A two-bar CSS chart is enough and avoids another dependency. Não informe que um e-mail foi enviado se nenhum serviço fez o envio. O código atual apenas exibe uma confirmação. Use mailto para preparar a mensagem ou implemente envio no backend com credenciais guardadas em variáveis de ambiente.</p>
+<h2>Páginas e rotas</h2>
+<p>Crie FAQ.jsx com perguntas sobre Fator R, profissões, estimativas e folha mensal. Crie Sobre.jsx com o objetivo do projeto e informações do NAF/Universidade Christus. Substitua o contato de exemplo pelo endereço confirmado pelo NAF.</p>
+<p>Create NotFound.jsx:</p>
+<pre><code class="language-jsx">import { Link } from &#x27;react-router-dom&#x27;;
+export default function NotFound(){return &lt;main className=&quot;mx-auto max-w-xl px-4 py-20 text-center&quot;&gt;&lt;h1 className=&quot;text-3xl font-bold&quot;&gt;Página não encontrada&lt;/h1&gt;&lt;p className=&quot;my-4&quot;&gt;Confira o endereço ou volte à calculadora.&lt;/p&gt;&lt;Link className=&quot;font-bold underline&quot; to=&quot;/&quot;&gt;Voltar à calculadora&lt;/Link&gt;&lt;/main&gt;}</code></pre>
+<p>No App.jsx, registre / como Simulador, /comparativo como resultado, /historico, /faq, /sobre e a rota curinga * como NotFound. Preserve login/register como páginas extras. Se não houver resultado salvo, /comparativo deve redirecionar para /. Inclua a barra de navegação em todas as páginas, com links para calculadora, histórico, FAQ e Sobre nos menus desktop e mobile. Adicione aria-label à navegação, aria-expanded ao controle do menu mobile e foco de teclado visível.</p>
+<h2>Opcional: exportação do histórico em CSV</h2>
+<p>Inside Historico.jsx add this function and show an Export CSV button when records exist:</p>
+<pre><code class="language-js">function exportarCSV(){
+ const cols=[&#x27;Data&#x27;,&#x27;Profissao&#x27;,&#x27;Faturamento&#x27;,&#x27;Custos&#x27;,&#x27;Fator R&#x27;,&#x27;Anexo&#x27;,&#x27;Imposto PF&#x27;,&#x27;Imposto PJ&#x27;,&#x27;Melhor opcao&#x27;];
+ const rows=calculos.map(c=&gt;[new Date(c.createdAt).toLocaleString(&#x27;pt-BR&#x27;),c.tipoProfissao,c.faturamento,c.custos??0,c.fatorR??&#x27;&#x27;,c.anexoPJ??&#x27;&#x27;,c.impostoPF,c.impostoPJ,c.melhorOpcao]);
+ const csv=[cols,...rows].map(row=&gt;row.map(v=&gt;&#x27;&quot;&#x27;+String(v).replaceAll(&#x27;&quot;&#x27;,&#x27;&quot;&quot;&#x27;)+&#x27;&quot;&#x27;).join(&#x27;;&#x27;)).join(&#x27;\r\n&#x27;);
+ const url=URL.createObjectURL(new Blob([&#x27;\uFEFF&#x27;,csv],{type:&#x27;text/csv;charset=utf-8&#x27;}));
+ const a=document.createElement(&#x27;a&#x27;);a.href=url;a.download=&#x27;historico-simulacoes.csv&#x27;;a.click();URL.revokeObjectURL(url);
+}</code></pre>
+<p>A exportação CSV é uma das funcionalidades opcionais. O tema claro/escuro persistente e o gráfico de ponto de equilíbrio também são opções relativamente simples. Três opcionais já atingem o limite de 1,5 ponto extra. Chatbot, PWA e vídeos também estão descritos neste kit.</p>
+<h2>Acessibilidade e relatório técnico</h2>
+<p>Em todos os campos, associe o rótulo ao controle, mantenha foco visível e anuncie erros a leitores de tela. Use larguras flexíveis e verifique a aplicação em 320 px sem rolagem horizontal. Teste teclado e contraste mínimo 4,5:1. Registre no relatório a nota Lighthouse Accessibility &gt;=90 e a evidência da versão final.</p>
+<p>Crie docs/Relatorio-Tecnico-NP2.md e complete com dados reais da equipe:</p>
+<ul>
+<li>Context and problem being addressed.</li>
+<li>List of each mandatory requirement.</li>
+<li>Activity table with member, planned task, done/not done, evidence link.</li>
+<li>Proposed solution, system structure/data flow and a diagram.</li>
+<li>Actual technologies and versions.</li>
+<li>Accessibility audit score and evidence.</li>
+<li>Difficulties, limitations, unimplemented features and conclusion.</li>
+<li>References to the official 2026 IRPF table and Simples Nacional Factor R rule.</li>
+</ul>
+<p>Não declare teste ou nota que não tenha sido medido. Execute a aplicação e demonstre-a na apresentação.</p>
+<h2>Ordem recomendada de implementação</h2>
+<ol>
+<li>Add the calculation service, controller, public simulate route, Prisma optional fields and migration.</li>
+<li>Add Simulador, update Comparativo/PDF, add FAQ/About/404 and routes.</li>
+<li>Update both desktop and mobile menus; add CSV and optional bonus features.</li>
+<li>Review accessibility and test at 320 px; record Lighthouse score.</li>
+<li>Confirm the official NAF email and tax assumptions with the professor; write the report.</li>
+</ol>
+<h2>Código completo do resultado e páginas simples</h2>
+<p>Substitua frontend/src/Pages/Comparativo.jsx:</p>
+<pre><code class="language-jsx">import {useEffect} from &#x27;react&#x27;;
+import {useLocation,useNavigate} from &#x27;react-router-dom&#x27;;
+import html2pdf from &#x27;html2pdf.js&#x27;;
+import Navbar from &#x27;../components/Navbar&#x27;;
+import Footer from &#x27;../components/Footer&#x27;;
+const brl=n=&gt;Number(n||0).toLocaleString(&#x27;pt-BR&#x27;,{style:&#x27;currency&#x27;,currency:&#x27;BRL&#x27;});
+export default function Comparativo(){
+ const loc=useLocation(),navigate=useNavigate();
+ let r=loc.state?.resultado;
+ if(!r){try{r=JSON.parse(sessionStorage.getItem(&#x27;naf-resultado&#x27;)||&#x27;null&#x27;);}catch{r=null;}}
+ useEffect(()=&gt;{if(!r)navigate(&#x27;/&#x27;,{replace:true});},[r,navigate]);
+ if(!r)return null;
+ const max=Math.max(r.impostoPF,r.impostoPJ,1);
+ const emissao=new Date().toLocaleString(&#x27;pt-BR&#x27;);
+ async function baixar(){await html2pdf().set({margin:10,filename:&#x27;comparativo-naf.pdf&#x27;,image:{type:&#x27;jpeg&#x27;,quality:.98},html2canvas:{scale:2,useCORS:true},jsPDF:{unit:&#x27;mm&#x27;,format:&#x27;a4&#x27;}}).from(document.getElementById(&#x27;relatorio&#x27;)).save();}
+ const body=encodeURIComponent(&#x27;Simulação NAF\nPF: &#x27;+brl(r.impostoPF)+&#x27;\nPJ: &#x27;+brl(r.impostoPJ)+&#x27;\nVantagem: &#x27;+r.melhorOpcao+&#x27;\nEstimativa acadêmica.&#x27;);
+ return &lt;div className=&quot;min-h-screen flex flex-col bg-naf-light&quot;&gt;&lt;Navbar/&gt;&lt;main className=&quot;mx-auto w-full max-w-4xl flex-1 px-4 py-8&quot;&gt;
+  &lt;div className=&quot;mb-4 flex flex-wrap gap-3 print:hidden&quot;&gt;&lt;button onClick={baixar} className=&quot;rounded bg-naf-blue px-4 py-3 font-bold text-white focus-visible:outline focus-visible:outline-2&quot;&gt;Baixar PDF&lt;/button&gt;&lt;a className=&quot;rounded border px-4 py-3 focus-visible:outline focus-visible:outline-2&quot; href={&#x27;mailto:?subject=Comparativo%20tributario&amp;body=&#x27;+body}&gt;Preparar e-mail&lt;/a&gt;&lt;button onClick={()=&gt;navigate(&#x27;/&#x27;)} className=&quot;rounded border px-4 py-3&quot;&gt;Nova simulação&lt;/button&gt;&lt;/div&gt;
+  &lt;article id=&quot;relatorio&quot; className=&quot;rounded-2xl bg-white p-5 shadow sm:p-8&quot;&gt;
+   &lt;header className=&quot;border-b pb-4&quot;&gt;&lt;p className=&quot;font-bold&quot;&gt;Núcleo de Apoio Contábil e Fiscal — Universidade Christus&lt;/p&gt;&lt;h1 className=&quot;my-2 text-2xl font-bold&quot;&gt;Comparativo estimado PF × PJ&lt;/h1&gt;&lt;p&gt;Profissão: {r.profissao} · Emitido em {emissao}&lt;/p&gt;&lt;p className=&quot;mt-2 bg-amber-50 p-2&quot;&gt;Estimativa acadêmica. Não constitui orientação contábil/tributária.&lt;/p&gt;&lt;/header&gt;
+   &lt;section className=&quot;border-b py-5&quot;&gt;&lt;h2 className=&quot;text-xl font-bold&quot;&gt;Comparativo mensal&lt;/h2&gt;{[[&#x27;PF&#x27;,r.impostoPF],[&#x27;PJ&#x27;,r.impostoPJ]].map(([label,value])=&gt;&lt;div key={label} className=&quot;my-3&quot;&gt;&lt;div className=&quot;flex justify-between&quot;&gt;&lt;span&gt;{label}&lt;/span&gt;&lt;b&gt;{brl(value)}&lt;/b&gt;&lt;/div&gt;&lt;div className=&quot;h-6 rounded bg-slate-100&quot;&gt;&lt;div className=&quot;h-6 rounded bg-naf-red&quot; style={{width:Math.max(2,value/max*100)+&#x27;%&#x27;}}/&gt;&lt;/div&gt;&lt;/div&gt;)}&lt;p className=&quot;font-bold&quot;&gt;Mais vantajoso: {r.melhorOpcao}&lt;/p&gt;&lt;/section&gt;
+   &lt;section className=&quot;border-b py-5&quot;&gt;&lt;h2 className=&quot;text-xl font-bold&quot;&gt;Memória PF&lt;/h2&gt;&lt;p&gt;Base {brl(r.pf.base)} · Faixa {r.pf.faixa} · Alíquota {(r.pf.aliquota*100).toLocaleString(&#x27;pt-BR&#x27;)}% · Dedução {brl(r.pf.deducao)} · Redução IRPF 2026 {brl(r.pf.reducao2026)} · Imposto estimado {brl(r.impostoPF)}&lt;/p&gt;&lt;/section&gt;
+   &lt;section className=&quot;py-5&quot;&gt;&lt;h2 className=&quot;text-xl font-bold&quot;&gt;Memória PJ&lt;/h2&gt;&lt;p&gt;Base Simples {brl(r.pj.baseSimples)} · Anexo {r.anexo} · Alíquota efetiva {(r.pj.aliquotaEfetiva*100).toLocaleString(&#x27;pt-BR&#x27;,{maximumFractionDigits:3})}% · Simples {brl(r.pj.simples)} · Pró-labore estimado {brl(r.pj.salarioBase)} · INSS estimado {brl(r.pj.inss)} · Total {brl(r.impostoPJ)}&lt;/p&gt;{r.fatorR!==null&amp;&amp;&lt;p&gt;Folha mensal {brl(r.folhaMensal)} · Fator R {(r.fatorR*100).toLocaleString(&#x27;pt-BR&#x27;,{maximumFractionDigits:2})}% · {r.fatorR&gt;=.28?&#x27;Anexo III (28% ou mais)&#x27;:&#x27;Anexo V (abaixo de 28%)&#x27;}.&lt;/p&gt;}&lt;/section&gt;
+   &lt;footer className=&quot;border-t pt-4 text-sm&quot;&gt;O enquadramento real depende do CNAE, receita e folha efetivas dos 12 meses e demais regras vigentes. Simulação simplificada.&lt;/footer&gt;
+  &lt;/article&gt;&lt;/main&gt;&lt;Footer/&gt;&lt;/div&gt;;
+}</code></pre>
+<p>FAQ.jsx:</p>
+<pre><code class="language-jsx">import Navbar from &#x27;../components/Navbar&#x27;;import Footer from &#x27;../components/Footer&#x27;;
+const items=[[&#x27;O que é Fator R?&#x27;,&#x27;Razão entre folha dos 12 meses anteriores e receita bruta dos mesmos 12 meses. 28% ou mais: Anexo III; abaixo: Anexo V para atividades sujeitas.&#x27;],[&#x27;Quais profissões estão na calculadora?&#x27;,&#x27;Psicologia, arquitetura, advocacia, medicina e odontologia.&#x27;],[&#x27;O resultado é oficial?&#x27;,&#x27;Não. É uma estimativa acadêmica, não substitui análise de profissional contábil.&#x27;],[&#x27;Como é calculado?&#x27;,&#x27;A tela anualiza os valores mensais informados por 12, supondo estabilidade ao longo do período.&#x27;]];
+export default function FAQ(){return &lt;div className=&quot;min-h-screen flex flex-col&quot;&gt;&lt;Navbar/&gt;&lt;main id=&quot;conteudo&quot; className=&quot;mx-auto w-full max-w-3xl flex-1 px-4 py-8&quot;&gt;&lt;h1 className=&quot;mb-6 text-3xl font-bold&quot;&gt;Perguntas frequentes&lt;/h1&gt;{items.map(([q,a])=&gt;&lt;details key={q} className=&quot;mb-3 rounded border bg-white p-4&quot;&gt;&lt;summary className=&quot;cursor-pointer font-bold focus-visible:outline focus-visible:outline-2&quot;&gt;{q}&lt;/summary&gt;&lt;p className=&quot;mt-3&quot;&gt;{a}&lt;/p&gt;&lt;/details&gt;)}&lt;/main&gt;&lt;Footer/&gt;&lt;/div&gt;}</code></pre>
+<p>Sobre.jsx. Substitua o valor de EMAIL pelo endereço que o NAF confirmar:</p>
+<pre><code class="language-jsx">import Navbar from &#x27;../components/Navbar&#x27;;import Footer from &#x27;../components/Footer&#x27;;
+const EMAIL=&#x27;EMAIL_NAF_CONFIRMADO&#x27;;
+export default function Sobre(){return &lt;div className=&quot;min-h-screen flex flex-col&quot;&gt;&lt;Navbar/&gt;&lt;main id=&quot;conteudo&quot; className=&quot;mx-auto w-full max-w-3xl flex-1 px-4 py-8&quot;&gt;&lt;h1 className=&quot;text-3xl font-bold&quot;&gt;Sobre o projeto&lt;/h1&gt;&lt;p className=&quot;mt-4&quot;&gt;Calculadora acadêmica para apoiar educação fiscal e comparar estimativas tributárias de profissionais autônomos. Projeto vinculado ao Núcleo de Apoio Contábil e Fiscal da Universidade Christus.&lt;/p&gt;&lt;a className=&quot;mt-5 inline-block rounded bg-naf-blue px-4 py-3 font-bold text-white focus-visible:outline focus-visible:outline-2&quot; href={&#x27;mailto:&#x27;+EMAIL+&#x27;?subject=Duvida%20sobre%20a%20calculadora&#x27;}&gt;Enviar dúvida ao NAF&lt;/a&gt;&lt;/main&gt;&lt;Footer/&gt;&lt;/div&gt;}</code></pre>
+<p>NotFound.jsx:</p>
+<pre><code class="language-jsx">import {Link} from &#x27;react-router-dom&#x27;;
+export default function NotFound(){return &lt;main className=&quot;mx-auto max-w-xl px-4 py-20 text-center&quot;&gt;&lt;h1 className=&quot;text-3xl font-bold&quot;&gt;Página não encontrada&lt;/h1&gt;&lt;p className=&quot;my-4&quot;&gt;Confira o endereço ou volte à calculadora.&lt;/p&gt;&lt;Link className=&quot;font-bold underline&quot; to=&quot;/&quot;&gt;Voltar à calculadora&lt;/Link&gt;&lt;/main&gt;}</code></pre>
+<p>Substitua App.jsx:</p>
+<pre><code class="language-jsx">import {BrowserRouter,Routes,Route} from &#x27;react-router-dom&#x27;;
+import Simulador from &#x27;./Pages/Simulador&#x27;;import Comparativo from &#x27;./Pages/Comparativo&#x27;;import Historico from &#x27;./Pages/Historico&#x27;;
+import FAQ from &#x27;./Pages/FAQ&#x27;;import Sobre from &#x27;./Pages/Sobre&#x27;;import NotFound from &#x27;./Pages/NotFound&#x27;;
+import Login from &#x27;./Pages/Login&#x27;;import Cadastro from &#x27;./Pages/Cadastro&#x27;;import RecuperarSenha from &#x27;./Pages/RecuperarSenha&#x27;;import Home from &#x27;./Pages/Home&#x27;;
+export default function App(){return &lt;BrowserRouter&gt;&lt;Routes&gt;
+ &lt;Route path=&quot;/&quot; element={&lt;Simulador/&gt;}/&gt;&lt;Route path=&quot;/comparativo&quot; element={&lt;Comparativo/&gt;}/&gt;&lt;Route path=&quot;/historico&quot; element={&lt;Historico/&gt;}/&gt;
+ &lt;Route path=&quot;/faq&quot; element={&lt;FAQ/&gt;}/&gt;&lt;Route path=&quot;/sobre&quot; element={&lt;Sobre/&gt;}/&gt;
+ &lt;Route path=&quot;/login&quot; element={&lt;Login/&gt;}/&gt;&lt;Route path=&quot;/cadastro&quot; element={&lt;Cadastro/&gt;}/&gt;&lt;Route path=&quot;/RecuperarSenha&quot; element={&lt;RecuperarSenha/&gt;}/&gt;&lt;Route path=&quot;/Home&quot; element={&lt;Home/&gt;}/&gt;
+ &lt;Route path=&quot;/calculo-pf&quot; element={&lt;Simulador/&gt;}/&gt;&lt;Route path=&quot;/calculo-pj&quot; element={&lt;Simulador/&gt;}/&gt;&lt;Route path=&quot;*&quot; element={&lt;NotFound/&gt;}/&gt;
+&lt;/Routes&gt;&lt;/BrowserRouter&gt;}</code></pre>
+<h2>Navbar completo</h2>
+<p>Para não ficar só na instrução de “acrescentar links”, substitua frontend/src/components/Navbar.jsx por este menu simples. Login e cadastro continuam acessíveis nas telas existentes; a calculadora principal não exige login.</p>
+<pre><code class="language-jsx">import {useState,useEffect} from &#x27;react&#x27;;
+import {Link,useNavigate} from &#x27;react-router-dom&#x27;;
+const links=[[&#x27;Calculadora&#x27;,&#x27;/&#x27;],[&#x27;Histórico&#x27;,&#x27;/historico&#x27;],[&#x27;FAQ&#x27;,&#x27;/faq&#x27;],[&#x27;Sobre&#x27;,&#x27;/sobre&#x27;]];
+export default function Navbar(){
+ const [aberto,setAberto]=useState(false),[tema,setTema]=useState(()=&gt;localStorage.getItem(&#x27;naf-tema&#x27;)||&#x27;claro&#x27;);
+ const nav=useNavigate();
+ useEffect(()=&gt;{document.documentElement.dataset.theme=tema;localStorage.setItem(&#x27;naf-tema&#x27;,tema);},[tema]);
+ function sair(){localStorage.removeItem(&#x27;token&#x27;);localStorage.removeItem(&#x27;user&#x27;);nav(&#x27;/&#x27;);}
+ const linkClass=&#x27;block rounded px-3 py-2 text-white hover:bg-slate-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-white&#x27;;
+ return &lt;&gt;&lt;a href=&quot;#conteudo&quot; className=&quot;sr-only focus:not-sr-only focus:absolute focus:z-50 focus:bg-white focus:p-3&quot;&gt;Pular para o conteúdo&lt;/a&gt;
+ &lt;nav aria-label=&quot;Navegação principal&quot; className=&quot;w-full bg-naf-blue text-white&quot;&gt;&lt;div className=&quot;mx-auto flex max-w-7xl items-center justify-between gap-2 px-4 py-3&quot;&gt;
+  &lt;Link to=&quot;/&quot; className=&quot;font-bold focus-visible:outline focus-visible:outline-2&quot;&gt;Calculadora NAF&lt;/Link&gt;
+  &lt;button type=&quot;button&quot; className=&quot;rounded p-2 focus-visible:outline focus-visible:outline-2 md:hidden&quot; aria-controls=&quot;menu-principal&quot; aria-expanded={aberto} onClick={()=&gt;setAberto(!aberto)}&gt;{aberto?&#x27;Fechar&#x27;:&#x27;Menu&#x27;}&lt;/button&gt;
+  &lt;div id=&quot;menu-principal&quot; className={(aberto?&#x27;flex&#x27;:&#x27;hidden&#x27;)+&#x27; absolute left-0 right-0 top-14 z-20 flex-col bg-naf-blue p-3 md:static md:flex md:flex-row md:items-center md:p-0&#x27;}&gt;
+   {links.map(([t,p])=&gt;&lt;Link key={p} to={p} className={linkClass} onClick={()=&gt;setAberto(false)}&gt;{t}&lt;/Link&gt;)}
+   &lt;button type=&quot;button&quot; className={linkClass} onClick={()=&gt;setTema(tema===&#x27;claro&#x27;?&#x27;escuro&#x27;:&#x27;claro&#x27;)}&gt;Tema {tema===&#x27;claro&#x27;?&#x27;escuro&#x27;:&#x27;claro&#x27;}&lt;/button&gt;
+   {localStorage.getItem(&#x27;token&#x27;)&amp;&amp;&lt;button type=&quot;button&quot; className={linkClass} onClick={sair}&gt;Sair&lt;/button&gt;}
+  &lt;/div&gt;
+ &lt;/div&gt;&lt;/nav&gt;&lt;/&gt;;
+}</code></pre>
+<p>Append to frontend/src/index.css for persisted theme; review contrast after adding, since the app uses utility classes:</p>
+<pre><code class="language-css">:root[data-theme=&quot;escuro&quot;] body { background:#111827; color:#f9fafb; }
+:root[data-theme=&quot;escuro&quot;] .bg-white { background-color:#1f2937 !important; color:#f9fafb; }
+:root[data-theme=&quot;escuro&quot;] .bg-naf-light { background-color:#111827 !important; }
+:root[data-theme=&quot;escuro&quot;] .text-slate-700,
+:root[data-theme=&quot;escuro&quot;] .text-slate-900,
+:root[data-theme=&quot;escuro&quot;] .text-naf-blue { color:#f9fafb !important; }
+:root[data-theme=&quot;escuro&quot;] input,
+:root[data-theme=&quot;escuro&quot;] select,
+:root[data-theme=&quot;escuro&quot;] textarea { background:#111827; color:#f9fafb; border-color:#9ca3af; }</code></pre>
+<h2>Opcional: ponto de equilíbrio</h2>
+<p>A implementação completa, otimizada para fazer uma única chamada ao servidor, está na seção “Funcionalidades opcionais” ao final deste documento. Use aquela versão e não o protótipo anterior.</p>
+<h2>Modelo pronto do relatório</h2>
+<p>Crie docs/Relatorio-Tecnico-NP2.md e substitua os campos em colchetes. Registre somente atividades e evidências reais:</p>
+<pre><code class="language-md"># Relatório Técnico — Calculadora Tributária NAF (NP2 2026.2)
+
+**Curso:** [curso]  
+**Disciplina:** Desenvolvimento de Aplicações com Frameworks Web  
+**Professor:** Maurício Moreira Neto  
+**Equipe:** [nomes dos integrantes]  
+**Repositório:** [link do fork]  
+**Data:** [data]
+
+## 1. Contextualização
+A aplicação apoia o atendimento educativo do NAF da Universidade Christus. Seu objetivo é estimar e comparar cenários mensais de tributação PF e PJ para psicólogos, arquitetos, advogados, médicos e dentistas.
+
+## 2. Problema e requisitos
+A versão NP2 deve adicionar médicos e dentistas, apurar e exibir Fator R e anexo, disponibilizar as rotas /, /comparativo, /historico, /faq e /sobre, incluir menu global, página 404, redirecionamento sem resultado, responsividade a partir de 320 px, requisitos de acessibilidade e evolução do PDF. Também preserva os fluxos anteriores de comparação, indicação de regime, e-mail, contato NAF e PDF.
+
+## 3. Atividades da equipe
+| Integrante | Atividade planejada | Realizada? | Evidência (commit/PR/arquivo) |
+|---|---|---|---|
+| [nome] | [atividade] | [sim/não] | [URL ou caminho] |
+
+## 4. Solução e implementação
+[Descrever formulário, validação, chamada à API, cálculo, comparação, histórico e geração do PDF.]
+
+### Estrutura do sistema
+[Inserir diagrama de fluxo ou camadas e explicar React, API Express, Prisma e PostgreSQL.]
+
+### Premissas tributárias
+[Registrar tabela e fonte conferidas com o professor. Explicar hipótese de mensalidade constante para anualização do Fator R e a estimativa simplificada de INSS.]
+
+## 5. Tecnologias
+[Versões reais do React, React Router, Vite, Tailwind, Express, Prisma, PostgreSQL, html2pdf e Docker.]
+
+## 6. Acessibilidade e responsividade
+**Lighthouse Accessibility:** [nota]/100. **Data/build:** [informação].  
+[Anexar evidência. Registrar verificação de 320 px, teclado, foco, rótulos, anúncios de erro e contraste.]
+
+## 7. Dificuldades e limitações
+[Problemas e soluções; pontos não implementados; necessidade de confirmar atividade/CNAE, receita de 12 meses, folha e demais particularidades.]
+
+## 8. Conclusão
+[Resumir a entrega e indicar, requisito por requisito, o que foi cumprido.]
+
+## Referências
+- Receita Federal, Tributação de 2026: https://www.gov.br/receitafederal/pt-br/assuntos/meu-imposto-de-renda/tabelas/2026
+- Simples Nacional, Fator R: https://www8.receita.fazenda.gov.br/simplesnacional/noticias/NoticiaCompleta.aspx?id=415ad600-7d43-4e55-971b-55df99e95ef3
+- [Outras referências consultadas e data de acesso]</code></pre>
+<h2>FUNCIONALIDADES OPCIONAIS</h2>
+<p>O enunciado oferece seis funcionalidades opcionais. Cada uma vale 0,5 ponto, com acréscimo limitado a 1,5 ponto. Portanto, basta implementar três opcionais para chegar ao teto de pontuação extra. Selecione as três que a equipe consegue concluir, documentar e demonstrar.</p>
+<h3>1. Gráfico de ponto de equilíbrio</h3>
+<p>Este gráfico opcional estima a renda em que a recomendação PF/PJ muda. Para evitar dezenas de chamadas da interface ao servidor, o backend calcula a série inteira em uma única solicitação.</p>
+<p>No final de backend/src/services/calculoTributario.js, acrescente:</p>
+<pre><code class="language-js">function gerarPontosEquilibrio({ tipoProfissao, custos = 0, folhaMensal = 0 }) {
+  const pontos = [];
+  for (let faturamento = 500; faturamento &lt;= 15000; faturamento += 250) {
+    const resultado = calcularComparativo({
+      tipoProfissao,
+      faturamento,
+      custos: Math.min(Number(custos || 0), faturamento),
+      folhaMensal: Number(folhaMensal || 0),
+    });
+    pontos.push({
+      faturamento,
+      impostoPF: resultado.impostoPF,
+      impostoPJ: resultado.impostoPJ,
+      melhorOpcao: resultado.melhorOpcao,
+    });
+  }
+  return pontos;
+}
+
+module.exports.gerarPontosEquilibrio = gerarPontosEquilibrio;</code></pre>
+<p>No começo de backend/src/controllers/calculoController.js, importe a função:</p>
+<pre><code class="language-js">const { gerarPontosEquilibrio } = require(&#x27;../services/calculoTributario&#x27;);</code></pre>
+<p>Dentro do objeto controller, acrescente o método:</p>
+<pre><code class="language-js">equilibrio: (req, res) =&gt; {
+  try {
+    const pontos = gerarPontosEquilibrio(req.body);
+    return res.json({ pontos });
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+},</code></pre>
+<p>Em backend/src/routes/calculoRoutes.js, registre a rota pública antes do middleware de autenticação:</p>
+<pre><code class="language-js">router.post(&#x27;/equilibrio&#x27;, calculoController.equilibrio);</code></pre>
+<p>Crie frontend/src/components/PontoEquilibrio.jsx:</p>
+<pre><code class="language-jsx">import { useEffect, useState } from &#x27;react&#x27;;
+import api from &#x27;../services/api&#x27;;
+
+export default function PontoEquilibrio({ resultado }) {
+  const [pontos, setPontos] = useState([]);
+  const [erro, setErro] = useState(&#x27;&#x27;);
+
+  useEffect(() =&gt; {
+    let ativo = true;
+    api.post(&#x27;/calculos/equilibrio&#x27;, {
+      tipoProfissao: resultado.profissao,
+      custos: resultado.custos,
+      folhaMensal: resultado.folhaMensal || 0,
+    }).then(({ data }) =&gt; {
+      if (ativo) setPontos(data.pontos);
+    }).catch(() =&gt; {
+      if (ativo) setErro(&#x27;Não foi possível gerar o gráfico.&#x27;);
+    });
+    return () =&gt; { ativo = false; };
+  }, [resultado]);
+
+  if (erro) return &lt;p role=&quot;alert&quot;&gt;{erro}&lt;/p&gt;;
+  if (!pontos.length) return &lt;p&gt;Calculando faixa de equilíbrio…&lt;/p&gt;;
+
+  const max = Math.max(...pontos.flatMap(p =&gt; [p.impostoPF, p.impostoPJ]), 1);
+  const w = 720, h = 260, pad = 38;
+  const xy = (valor, indice) =&gt; [
+    pad + indice * (w - 2 * pad) / (pontos.length - 1),
+    h - pad - (valor / max) * (h - 2 * pad),
+  ];
+  const path = (campo) =&gt; pontos.map((p, i) =&gt; {
+    const [x, y] = xy(p[campo], i);
+    return (i ? &#x27;L&#x27; : &#x27;M&#x27;) + x + &#x27; &#x27; + y;
+  }).join(&#x27; &#x27;);
+
+  return &lt;section className=&quot;my-6 rounded-xl border bg-white p-4&quot;&gt;
+    &lt;h2 className=&quot;mb-2 text-lg font-bold&quot;&gt;Ponto de equilíbrio estimado&lt;/h2&gt;
+    &lt;svg viewBox={&#x27;0 0 &#x27; + w + &#x27; &#x27; + h} role=&quot;img&quot;
+      aria-label=&quot;Gráfico de impostos PF e PJ por faturamento mensal&quot;&gt;
+      &lt;path d={path(&#x27;impostoPF&#x27;)} fill=&quot;none&quot; stroke=&quot;#2563eb&quot; strokeWidth=&quot;3&quot; /&gt;
+      &lt;path d={path(&#x27;impostoPJ&#x27;)} fill=&quot;none&quot; stroke=&quot;#c2410c&quot; strokeWidth=&quot;3&quot; /&gt;
+      &lt;text x={pad} y={h - 8}&gt;R$ 500/mês&lt;/text&gt;
+      &lt;text x={w - 130} y={h - 8}&gt;R$ 15.000/mês&lt;/text&gt;
+    &lt;/svg&gt;
+    &lt;p className=&quot;text-sm&quot;&gt;Azul: PF. Laranja: PJ. Valores são estimativas mensais.&lt;/p&gt;
+  &lt;/section&gt;;
+}</code></pre>
+<p>Em Comparativo.jsx, importe o componente e inclua &lt;PontoEquilibrio resultado={resultadoCompleto} /&gt; perto do resumo. Use o mesmo objeto completo retornado pelo backend. Não confunda este recurso opcional com o gráfico PF/PJ exigido no PDF.</p>
+<h3>2. Tema claro/escuro persistente</h3>
+<p>O bloco Navbar completo já incluído neste kit contém um botão que salva a escolha em localStorage. Acrescente os estilos abaixo ao final de frontend/src/index.css e revise as cores para garantir contraste:</p>
+<pre><code class="language-css">:root[data-theme=&quot;escuro&quot;] body { background: #111827; color: #f9fafb; }
+:root[data-theme=&quot;escuro&quot;] .bg-white { background-color: #1f2937 !important; color: #f9fafb; }
+:root[data-theme=&quot;escuro&quot;] .bg-naf-light { background-color: #111827 !important; }
+:root[data-theme=&quot;escuro&quot;] .text-slate-700,
+:root[data-theme=&quot;escuro&quot;] .text-slate-900,
+:root[data-theme=&quot;escuro&quot;] .text-naf-blue { color: #f9fafb !important; }
+:root[data-theme=&quot;escuro&quot;] input,
+:root[data-theme=&quot;escuro&quot;] select,
+:root[data-theme=&quot;escuro&quot;] textarea { background: #111827; color: #f9fafb; border-color: #9ca3af; }</code></pre>
+<h3>3. Chatbot com IA para dúvidas sobre o comparativo</h3>
+<p>O chatbot exige uma chave de API e pode gerar cobrança. A chave fica somente no backend, em variável de ambiente; nunca a coloque no React nem a envie para o GitHub. O exemplo usa a Responses API da OpenAI; configure OPENAI_MODEL com um modelo disponível na sua conta.</p>
+<p>No backend, crie backend/src/routes/chatRoutes.js:</p>
+<pre><code class="language-js">const express = require(&#x27;express&#x27;);
+const router = express.Router();
+
+router.post(&#x27;/&#x27;, async (req, res) =&gt; {
+  const pergunta = String(req.body.pergunta || &#x27;&#x27;).trim();
+  if (!pergunta || pergunta.length &gt; 1000) {
+    return res.status(400).json({ error: &#x27;Escreva uma pergunta de até 1000 caracteres.&#x27; });
+  }
+  if (!process.env.OPENAI_API_KEY || !process.env.OPENAI_MODEL) {
+    return res.status(503).json({ error: &#x27;Chatbot ainda não configurado.&#x27; });
+  }
+  try {
+    const resposta = await fetch(&#x27;https://api.openai.com/v1/responses&#x27;, {
+      method: &#x27;POST&#x27;,
+      headers: {
+        Authorization: &#x27;Bearer &#x27; + process.env.OPENAI_API_KEY,
+        &#x27;Content-Type&#x27;: &#x27;application/json&#x27;,
+      },
+      body: JSON.stringify({
+        model: process.env.OPENAI_MODEL,
+        instructions: &#x27;Responda em português, de forma simples, somente sobre conceitos gerais do comparativo PF/PJ e do resultado informado pelo usuário. Não invente alíquotas nem faça recomendação tributária profissional. Explique que a calculadora é uma estimativa acadêmica e que a pessoa deve consultar um contador.&#x27;,
+        input: pergunta,
+        max_output_tokens: 300,
+      }),
+    });
+    const data = await resposta.json();
+    if (!resposta.ok) {
+      return res.status(502).json({ error: &#x27;O serviço de IA não respondeu. Tente novamente.&#x27; });
+    }
+    const texto = (data.output || [])
+      .flatMap(item =&gt; item.content || [])
+      .filter(item =&gt; item.type === &#x27;output_text&#x27;)
+      .map(item =&gt; item.text)
+      .join(&#x27;\n&#x27;);
+    return res.json({ resposta: texto || &#x27;Não consegui formular uma resposta. Tente perguntar de outro jeito.&#x27; });
+  } catch {
+    return res.status(502).json({ error: &#x27;Não foi possível acessar o chatbot.&#x27; });
+  }
+});
+
+module.exports = router;</code></pre>
+<p>Em backend/src/server.js, adicione junto às outras rotas:</p>
+<pre><code class="language-js">app.use(&#x27;/chat&#x27;, require(&#x27;./routes/chatRoutes&#x27;));</code></pre>
+<p>No arquivo backend/.env local (não comite este arquivo), configure:</p>
+<pre><code class="language-env">OPENAI_API_KEY=COLOQUE_SUA_CHAVE_LOCAL
+OPENAI_MODEL=COLOQUE_UM_MODELO_DISPONIVEL_NA_SUA_CONTA</code></pre>
+<p>Crie frontend/src/components/Chatbot.jsx:</p>
+<pre><code class="language-jsx">import { useState } from &#x27;react&#x27;;
+import api from &#x27;../services/api&#x27;;
+
+export default function Chatbot() {
+  const [pergunta, setPergunta] = useState(&#x27;&#x27;);
+  const [mensagens, setMensagens] = useState([]);
+  const [carregando, setCarregando] = useState(false);
+
+  async function enviar(e) {
+    e.preventDefault();
+    const texto = pergunta.trim();
+    if (!texto || carregando) return;
+    setMensagens(atual =&gt; [...atual, { autor: &#x27;Você&#x27;, texto }]);
+    setPergunta(&#x27;&#x27;);
+    setCarregando(true);
+    try {
+      const { data } = await api.post(&#x27;/chat&#x27;, { pergunta: texto });
+      setMensagens(atual =&gt; [...atual, { autor: &#x27;Assistente&#x27;, texto: data.resposta }]);
+    } catch (error) {
+      setMensagens(atual =&gt; [...atual, {
+        autor: &#x27;Aviso&#x27;,
+        texto: error.response?.data?.error || &#x27;Não foi possível responder agora.&#x27;,
+      }]);
+    } finally {
+      setCarregando(false);
+    }
+  }
+
+  return &lt;section className=&quot;my-6 rounded-xl border bg-white p-4&quot;&gt;
+    &lt;h2 className=&quot;text-lg font-bold&quot;&gt;Tire dúvidas sobre o resultado&lt;/h2&gt;
+    &lt;div aria-live=&quot;polite&quot; className=&quot;my-3 max-h-64 space-y-2 overflow-y-auto&quot;&gt;
+      {mensagens.map((m, i) =&gt; &lt;p key={i}&gt;&lt;strong&gt;{m.autor}:&lt;/strong&gt; {m.texto}&lt;/p&gt;)}
+      {carregando &amp;&amp; &lt;p&gt;Preparando resposta…&lt;/p&gt;}
+    &lt;/div&gt;
+    &lt;form onSubmit={enviar} className=&quot;flex flex-col gap-2 sm:flex-row&quot;&gt;
+      &lt;label className=&quot;sr-only&quot; htmlFor=&quot;pergunta-chat&quot;&gt;Sua pergunta&lt;/label&gt;
+      &lt;input id=&quot;pergunta-chat&quot; maxLength=&quot;1000&quot; value={pergunta}
+        onChange={e =&gt; setPergunta(e.target.value)} className=&quot;min-w-0 flex-1 rounded border p-3&quot;
+        placeholder=&quot;Ex.: por que o Fator R muda o anexo?&quot; /&gt;
+      &lt;button disabled={carregando} className=&quot;rounded bg-naf-blue px-4 py-3 font-bold text-white&quot;&gt;
+        Enviar pergunta
+      &lt;/button&gt;
+    &lt;/form&gt;
+    &lt;p className=&quot;mt-2 text-xs&quot;&gt;Respostas automáticas para fins educativos; confirme regras tributárias com contador.&lt;/p&gt;
+  &lt;/section&gt;;
+}</code></pre>
+<p>Importe Chatbot.jsx em Comparativo.jsx e exiba-o abaixo do resultado. A chave e o modelo são necessários para o serviço funcionar e as chamadas podem ter custo. Consulte a documentação oficial da Responses API: https://platform.openai.com/docs/api-reference/responses</p>
+<h3>4. Exportação do histórico</h3>
+<p>O bloco de exportação CSV já está incluído anteriormente no kit. CSV atende ao requisito opcional “CSV ou Excel”; não é necessário oferecer os dois formatos.</p>
+<h3>5. PWA instalável com formulário disponível offline</h3>
+<p>Na pasta frontend, instale o complemento:</p>
+<pre><code class="language-bash">npm install -D vite-plugin-pwa</code></pre>
+<p>Substitua frontend/vite.config.js:</p>
+<pre><code class="language-js">import { defineConfig } from &#x27;vite&#x27;;
+import react from &#x27;@vitejs/plugin-react&#x27;;
+import tailwindcss from &#x27;@tailwindcss/vite&#x27;;
+import { VitePWA } from &#x27;vite-plugin-pwa&#x27;;
+
+export default defineConfig({
+  plugins: [
+    react(),
+    tailwindcss(),
+    VitePWA({
+      registerType: &#x27;autoUpdate&#x27;,
+      includeAssets: [&#x27;pwa-192.svg&#x27;, &#x27;pwa-512.svg&#x27;],
+      manifest: {
+        name: &#x27;Calculadora Tributária NAF&#x27;,
+        short_name: &#x27;Calculadora NAF&#x27;,
+        description: &#x27;Estimativa comparativa PF e PJ para fins educativos.&#x27;,
+        theme_color: &#x27;#132436&#x27;,
+        background_color: &#x27;#ffffff&#x27;,
+        display: &#x27;standalone&#x27;,
+        start_url: &#x27;/&#x27;,
+        icons: [
+          { src: &#x27;/pwa-192.svg&#x27;, sizes: &#x27;192x192&#x27;, type: &#x27;image/svg+xml&#x27;, purpose: &#x27;any&#x27; },
+          { src: &#x27;/pwa-512.svg&#x27;, sizes: &#x27;512x512&#x27;, type: &#x27;image/svg+xml&#x27;, purpose: &#x27;any&#x27; },
+        ],
+      },
+      workbox: {
+        globPatterns: [&#x27;**/*.{js,css,html,svg,png,woff2}&#x27;],
+        navigateFallback: &#x27;/index.html&#x27;,
+      },
+    }),
+  ],
+});</code></pre>
+<p>Crie frontend/public/pwa-192.svg:</p>
+<pre><code class="language-svg">&lt;svg xmlns=&quot;http://www.w3.org/2000/svg&quot; viewBox=&quot;0 0 192 192&quot;&gt;
+  &lt;rect width=&quot;192&quot; height=&quot;192&quot; rx=&quot;32&quot; fill=&quot;#132436&quot;/&gt;
+  &lt;text x=&quot;96&quot; y=&quot;118&quot; text-anchor=&quot;middle&quot; font-size=&quot;72&quot; font-family=&quot;Arial&quot; font-weight=&quot;700&quot; fill=&quot;#fff&quot;&gt;NAF&lt;/text&gt;
+&lt;/svg&gt;</code></pre>
+<p>Crie frontend/public/pwa-512.svg com o mesmo conteúdo, alterando viewBox para 0 0 512 512, o retângulo para width/height 512 e o texto para x="256", y="312", font-size="190". O service worker guarda os arquivos estáticos e permite abrir o formulário sem conexão. O cálculo que depende da API/banco continua precisando de rede; não apresente resultado de cálculo offline sem implementar e validar cálculo local.</p>
+<h3>6. Vídeos associados ao resultado</h3>
+<p>O código abaixo mostra um vídeo conforme a opção indicada. A equipe precisa colocar vídeos próprios ou escolher URLs oficiais do NAF e substituir os valores de exemplo. Não publique links inventados.</p>
+<p>Crie frontend/src/components/VideosResultado.jsx:</p>
+<pre><code class="language-jsx">const videos = {
+  &#x27;Pessoa Física (PF)&#x27;: {
+    titulo: &#x27;Entenda a opção Pessoa Física&#x27;,
+    arquivo: &#x27;/videos/pessoa-fisica.mp4&#x27;,
+  },
+  &#x27;Pessoa Jurídica (PJ)&#x27;: {
+    titulo: &#x27;Entenda a opção Pessoa Jurídica&#x27;,
+    arquivo: &#x27;/videos/pessoa-juridica.mp4&#x27;,
+  },
+};
+
+export default function VideosResultado({ melhorOpcao }) {
+  const video = videos[melhorOpcao];
+  if (!video) return null;
+  return &lt;section className=&quot;my-6 rounded-xl border bg-white p-4&quot;&gt;
+    &lt;h2 className=&quot;mb-3 text-lg font-bold&quot;&gt;{video.titulo}&lt;/h2&gt;
+    &lt;video className=&quot;w-full rounded&quot; controls preload=&quot;metadata&quot;&gt;
+      &lt;source src={video.arquivo} type=&quot;video/mp4&quot; /&gt;
+      Seu navegador não conseguiu reproduzir este vídeo.
+    &lt;/video&gt;
+  &lt;/section&gt;;
+}</code></pre>
+<p>Crie frontend/public/videos/ e coloque os arquivos confirmados pessoa-fisica.mp4 e pessoa-juridica.mp4 nessa pasta. Importe VideosResultado em Comparativo.jsx e inclua &lt;VideosResultado melhorOpcao={resultado.maisVantajoso} /&gt; abaixo dos cálculos. Se o grupo decidir usar vídeos hospedados, substitua por links verificáveis e use o formato de incorporação permitido pelo serviço.</p>
+<h3>Sequência recomendada dos extras</h3>
+<p>Para chegar ao limite de 1,5 ponto adicional, implemente e demonstre três funcionalidades. A combinação mais simples é exportação CSV, tema persistente e gráfico de ponto de equilíbrio. O chatbot pode exigir chave e gerar custos; o PWA exige conferir a experiência offline; vídeos dependem de conteúdo real do NAF. Os seis extras estão documentados aqui, mas não é preciso fazer os seis para atingir o limite de bônus.</p></main><script>
+const btn=document.getElementById('copy'),status=document.getElementById('status'),content=document.getElementById('content');
+btn.addEventListener('click',async()=>{const htmlData='<!doctype html><html><head><meta charset="utf-8"><style>body{font:11pt Arial;line-height:1.45}h1,h2,h3{font-weight:bold;color:#142a3d}pre{white-space:pre-wrap;background:#f3f5f7;border:1px solid #ddd;padding:8px;font:9pt Consolas}code{font:9pt Consolas}li{margin:4px 0}table{border-collapse:collapse}td,th{border:1px solid #bbb;padding:5px}</style></head><body>'+content.innerHTML+'</body></html>';try{if(navigator.clipboard&&window.ClipboardItem){await navigator.clipboard.write([new ClipboardItem({'text/html':new Blob([htmlData],{type:'text/html'}),'text/plain':new Blob([content.innerText],{type:'text/plain'})})]);status.textContent='Copiado com títulos e formatação. Agora cole no Docs ou Word.'}else throw 0}catch(e){const range=document.createRange();range.selectNodeContents(content);const sel=window.getSelection();sel.removeAllRanges();sel.addRange(range);status.textContent='Conteúdo selecionado. Pressione Ctrl+C e cole no Docs ou Word.'}});
+</script></body></html>
